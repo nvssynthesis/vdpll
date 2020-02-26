@@ -1,4 +1,4 @@
-#include "m_pd.h"
+#include "../m_pd.h"
 #include <math.h>
 #include <string.h>
 #include "ringmods.h"
@@ -28,10 +28,12 @@
  INLET:
     -signal in is the control signal to lock phase to
     -control-rate data determines internal frequency
- 
+ OUTLETS:
+ 	-the internal oscillator
+ 	-the internal phase (useful for controlling arbitrary wavetable)
  TODO:
-    -add phasor output so it can be used to control wavetables
     -figure out why xor is so finicky, maybe replace with mutable's way
+    -try more poles in its lowpass
  */
 
 static t_class *vdpll_tilde_class;
@@ -104,13 +106,30 @@ static void vdpll_tilde_set_phase_detector(t_vdpll_tilde *x, t_float type)
 }
 
 static t_int *vdpll_tilde_perform(t_int *w)
-{
+{	
+	// t_float *in = (t_float *)(w[1]);
+ //    t_float *out = (t_float *)(w[2]);
+ //    int n = (int)(w[3]);
+ //    while (n--)
+ //    {
+ //    	float f = *(in++);
+	// *out++ = (f > 0 ? f : -f);
+ //    }
+ //    return (w+6);
+	
+
+// x,
+// input vector
+// main output vector
+// phase output vector
+// blocksize
+
     t_vdpll_tilde *x = (t_vdpll_tilde *)(w[1]);
     
     t_float *master  = (t_float *)(w[2]);
     t_float *vco_out = (t_float *)(w[3]);
-    
-    int n = (int)(w[4]);
+    t_float *phase_out = (t_float *)(w[4]);
+    int n = (int)(w[5]);
     
     float modulatorOut;
     float phase = x->phase;
@@ -134,8 +153,8 @@ static t_int *vdpll_tilde_perform(t_int *w)
                 break;
             case 1:
             {
-                float onebit_master = (*master > 0.f) ? 1.f : 0.f;
-                float onebit_intern = (x->last_out > 0.f) ? 1.f : 0.f;
+                float onebit_master = (*master > 0.f) ? 1.f : -1.f;
+                float onebit_intern = (x->last_out > 0.f) ? 1.f : -1.f;
                 // XOR
                 modulatorOut = (onebit_intern != onebit_master);
                 break;
@@ -162,19 +181,31 @@ static t_int *vdpll_tilde_perform(t_int *w)
     	float f = *(master++);
         x->last_out = sin(phase * TWOPI);
         *vco_out++ = x->last_out;
+        *phase_out++ = phase;
         }
+        
     x->last_lop_out = last_lop_out;
     x->phase = phase;
-    return (w+5);
+    
+    return (w+6);
+    
 }
 
     /* called to start DSP.  Here we call Pd back to add our perform
     routine to a linear callback list which Pd in turn calls to grind
     out the samples. */
 static void vdpll_tilde_dsp(t_vdpll_tilde *x, t_signal **sp)
-{
+{	 
+	
     x->fs_delta = 1.0f / sp[0]->s_sr;
     x->cutOverFs = x->cutoff * x->fs_delta;
+    
+	// dsp_add(vdpll_tilde_perform, 
+	// 	3, 
+	// 	sp[0]->s_vec, 
+	// 	sp[1]->s_vec, 
+	// 	sp[0]->s_n);
+	
     dsp_add(vdpll_tilde_perform,
             5,              // number of items
             x,
@@ -182,6 +213,7 @@ static void vdpll_tilde_dsp(t_vdpll_tilde *x, t_signal **sp)
             sp[1]->s_vec,   // output vector
             sp[2]->s_vec,   // output vector
             sp[0]->s_n);    // blocksize
+            
 }
 
 static void *vdpll_tilde_new(t_float freq, t_float k, t_float cut, t_float type)
