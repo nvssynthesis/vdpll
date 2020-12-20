@@ -16,10 +16,10 @@
  phase locked loop object.
  several options for phase detection circuit:
     -ideal ring modulator (four-quadrant multiplier)
-    -XOR (1-bit ring modulator)
     -analog-style ringmod,  taken from mutable instruments' Warps
     -digital-style ringmod, taken from mutable instruments' Warps
- 
+    -XOR (1-bit ring modulator)
+
  ARGUMENTS:
     -first argument sets internal frequency. Defaults to 1000 Hz.
     -second argument sets k. Defaults to 0.
@@ -32,8 +32,7 @@
  	-the internal oscillator
  	-the internal phase (useful for controlling arbitrary wavetable)
  TODO:
-    -figure out why xor is so finicky, maybe replace with mutable's way
-    -try more poles in its lowpass
+    -try other filter implementations
  */
 
 static t_class *vdpll_tilde_class;
@@ -41,7 +40,6 @@ static t_class *vdpll_tilde_class;
 typedef struct _vdpll_tilde
 {
     t_object x_obj; 	/* obligatory header */
-    //t_float x_f;    	/* place to hold inlet's value if it's set by message */
     
     t_float intern_freq, intern_freq_target, cutoff, cutOverFs, cutOverFs_target, k, k_target;
     
@@ -50,9 +48,9 @@ typedef struct _vdpll_tilde
     double phase;
     enum phase_detector_type {
         ideal,   //0
-        xor,     //1
-        analog,  //2
-        digital  //3
+        analog,  //1
+        digital, //2
+        xor      //3
     } pdType;
     
     t_outlet*phasor_out;
@@ -76,7 +74,18 @@ static void vdpll_tilde_post(t_vdpll_tilde *x)
     post("cutOverFs is %f", x->cutOverFs);
     post("k is %f", x->k);
     post("intern_freq is %f", x->intern_freq);
-    post("method is %f", x->pdType);
+
+    switch (x->pdType)
+        {
+            case 0: post("phase detection method is ideal ring modulator (multiplier)");
+                break;
+            case 1: post("phase detection method is analog ring modulator");
+                break;
+            case 2: post("phase detection method is digital ring modulator");
+                break;
+            case 3: post("phase detection method is xor ring modulator");
+                break;
+        }
 }
 
 static void vdpll_tilde_set_freq(t_vdpll_tilde *x, t_floatarg freq)
@@ -86,6 +95,12 @@ static void vdpll_tilde_set_freq(t_vdpll_tilde *x, t_floatarg freq)
 }
 static void vdpll_tilde_set_k(t_vdpll_tilde *x, t_floatarg k)
 {
+    if (k > 10000.f)
+    {
+        k = 10000.f;
+        post("k maxed out");
+    }
+
     x->k_target = (float)k;
     //post("k_target is %f", x->k_target);
 }
@@ -93,8 +108,6 @@ static void vdpll_tilde_set_cutoff(t_vdpll_tilde *x, t_floatarg cutoff)
 {
     x->cutoff = cutoff;
     x->cutOverFs_target = (float)cutoff * (float)x->fs_delta;
-    /*post("cut: %f", x->cutoff);
-    post("cut / fs: %f", x->cutOverFs_target);*/
 }
 
 static void vdpll_tilde_set_phase_detector(t_vdpll_tilde *x, t_float type)
@@ -102,22 +115,11 @@ static void vdpll_tilde_set_phase_detector(t_vdpll_tilde *x, t_float type)
     if ((type >= 0) && (type < 4))
         x->pdType = (int)(floor(type));
     else
-        post("enter 0 for 'ideal', 1 for 'xor', 2 for 'analog', or 3 for 'digital'");
+        post("enter 0 for 'ideal', 1 for 'analog', 2 for 'digital', or 3 for 'xor'");
 }
 
 static t_int *vdpll_tilde_perform(t_int *w)
 {	
-	// t_float *in = (t_float *)(w[1]);
- //    t_float *out = (t_float *)(w[2]);
- //    int n = (int)(w[3]);
- //    while (n--)
- //    {
- //    	float f = *(in++);
-	// *out++ = (f > 0 ? f : -f);
- //    }
- //    return (w+6);
-	
-
 // x,
 // input vector
 // main output vector
@@ -149,37 +151,46 @@ static t_int *vdpll_tilde_perform(t_int *w)
         switch (x->pdType)
         {
             case 0:     // ideal ringmod
+            {
                 modulatorOut = x->last_out * *master;
                 break;
+            }
             case 1:
+            {
+                modulatorOut = analog_ringmod(x->last_out, *master, 0.f);
+                break;
+            }
+            case 2:
+            {
+                modulatorOut = digital_ringmod(x->last_out, *master, 0.f);
+                break;
+            }
+            case 3:
             {
                 float onebit_master = (*master > 0.f) ? 1.f : -1.f;
                 float onebit_intern = (x->last_out > 0.f) ? 1.f : -1.f;
                 // XOR
-                modulatorOut = (onebit_intern != onebit_master);
+                modulatorOut = (onebit_intern != onebit_master) * 2.f - 1.f;
                 break;
             }
-            case 2:
-                modulatorOut = analog_ringmod(x->last_out, *master, 0.f);
-                break;
-            case 3:
-                modulatorOut = digital_ringmod(x->last_out, *master, 0.f);
-                break;
         }
         
         // filter the modulator output to isolate DC component.
         last_lop_out = lop(modulatorOut, last_lop_out, x->cutOverFs);
         
-        // if the phasor increment amount ever exceeds -.5 to .5
-        phase += (x->intern_freq * x->fs_delta) + (last_lop_out * x->k * x->fs_delta);
+        float phaseinc = (x->intern_freq * x->fs_delta) + (last_lop_out * x->k * x->intern_freq * x->fs_delta);
+		phaseinc = phaseinc <  0.5f ? phaseinc :  0.5f;
+		phaseinc = phaseinc > -0.5f ? phaseinc : -0.5f;
+        phase += phaseinc;
+
         // wrap between 0 and 1
         while (phase >= 1.f)
             phase -= 1.f;
         while (phase < 0)
             phase += 1.f;
         
-    	float f = *(master++);
-        x->last_out = sin(phase * TWOPI);
+    	float f = *(master++);        
+        x->last_out = cos(phase * TWOPI);
         *vco_out++ = x->last_out;
         *phase_out++ = phase;
         }
@@ -200,12 +211,10 @@ static void vdpll_tilde_dsp(t_vdpll_tilde *x, t_signal **sp)
     x->fs_delta = 1.0f / sp[0]->s_sr;
     x->cutOverFs = x->cutoff * x->fs_delta;
     
-	// dsp_add(vdpll_tilde_perform, 
-	// 	3, 
-	// 	sp[0]->s_vec, 
-	// 	sp[1]->s_vec, 
-	// 	sp[0]->s_n);
-	
+	// RESET FILTER STATES TOO
+	x->last_lop_out = 0.f;
+    x->last_out = 0.f;
+
     dsp_add(vdpll_tilde_perform,
             5,              // number of items
             x,
@@ -239,7 +248,7 @@ static void *vdpll_tilde_new(t_float freq, t_float k, t_float cut, t_float type)
     if ((type >= 0) && (type < 4))
         x->pdType = (int)(floor(type));
     else
-        post("enter 0 for 'ideal', 1 for 'xor', 2 for 'analog', or 3 for 'digital'");
+        post("enter 0 for 'ideal', 1 for 'analog', 2 for 'digital', or 3 for 'xor'");
     //============================================================
     return (x);
 }
