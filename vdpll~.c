@@ -106,6 +106,7 @@ static void vdpll_tilde_set_k(t_vdpll_tilde *x, t_floatarg k)
 }
 static void vdpll_tilde_set_cutoff(t_vdpll_tilde *x, t_floatarg cutoff)
 {
+    cutoff = cutoff * (cutoff > 0.f);
     x->cutoff = cutoff;
     x->cutOverFs_target = (float)cutoff * (float)x->fs_delta;
 }
@@ -271,4 +272,5 @@ void vdpll_tilde_setup(void)
     	/* here we tell Pd about the "dsp" method, which is called back
 	when DSP is turned on. */
     class_addmethod(vdpll_tilde_class, (t_method)vdpll_tilde_dsp, gensym("dsp"), 0);
+    class_sethelpsymbol(vdpll_tilde_class, gensym("vdpll~"));
 }
